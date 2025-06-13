@@ -1,73 +1,63 @@
-const cors = require('cors');
-const express = require('express');
-const multer = require('multer');
-const AdmZip = require('adm-zip');
-const fs = require('fs');
-const { exec } = require('child_process');
-const path = require('path');
+import express from 'express';
+import multer from 'multer';
+import AdmZip from 'adm-zip';
+import fs from 'fs';
+import { exec } from 'child_process';
+import path from 'path';
 
 const app = express();
-app.use(cors({ origin: '*' })); // You can replace '*' with a specific origin if needed
-
-const port = process.env.PORT || 3000;
 const upload = multer({ dest: '/tmp/uploads' });
+const PORT = process.env.PORT || 3000;
 
-app.post('/compile', upload.single('plugin'), (req, res) => {
-  const zipPath = req.file.path;
-  const id = Date.now();
-  const extractPath = `/tmp/plugin-${id}`;
+app.post('/compile', upload.single('plugin'), async (req, res) => {
+  const zipPath = req.file?.path;
+  if (!zipPath) return res.status(400).send('No file uploaded.');
 
+  const buildId = Date.now();
+  const workDir = `/tmp/plugin-${buildId}`;
+  fs.mkdirSync(workDir);
+
+  /* ---------- 1. UNZIP SAFELY ---------- */
   try {
-    fs.mkdirSync(extractPath);
-
     const zip = new AdmZip(zipPath);
-    zip.extractAllTo(extractPath, true);
-
-    // Confirm required files exist
-    if (!fs.existsSync(path.join(extractPath, 'pom.xml'))) {
-      return res.status(400).json({ success: false, message: 'Missing pom.xml in root directory.' });
-    }
-    if (!fs.existsSync(path.join(extractPath, 'plugin.yml'))) {
-      return res.status(400).json({ success: false, message: 'Missing plugin.yml in root directory.' });
-    }
-
-    // Compile with Maven
-    exec(`mvn clean package`, { cwd: extractPath }, (error, stdout, stderr) => {
-      if (error) {
-        console.error('Build error:', stderr);
-        return res.status(500).json({
-          success: false,
-          message: 'Compilation failed',
-          log: stdout + '\n' + stderr
-        });
-      }
-
-      // Locate .jar file in /target/
-      const targetPath = path.join(extractPath, 'target');
-      const files = fs.readdirSync(targetPath);
-      const jar = files.find(f => f.endsWith('.jar'));
-
-      if (!jar) {
-        return res.status(500).json({
-          success: false,
-          message: 'No .jar file found after successful Maven build',
-          log: stdout
-        });
-      }
-
-      // Send the .jar back
-      res.download(path.join(targetPath, jar));
-    });
-  } catch (e) {
-    console.error('Unexpected server error:', e);
-    return res.status(500).json({
-      success: false,
-      message: 'Internal server error during preparation',
-      error: e.message
-    });
+    zip.extractAllTo(workDir, true);
+  } catch (zipErr) {
+    console.error('❌ ZIP extraction failed:', zipErr);
+    return res
+      .status(400)
+      .send(
+        `Invalid ZIP archive. Make sure you’re sending a valid Maven project ` +
+          `with pom.xml & src folders.\n\n${zipErr.message}`
+      );
   }
+
+  /* ---------- 2. RUN MAVEN ---------- */
+  exec(
+    'mvn -B -q clean package',
+    { cwd: workDir, maxBuffer: 1024 * 500 },
+    (err, _stdout, stderr) => {
+      if (err) {
+        console.error('❌ Maven failed:', stderr);
+        return res.status(500).send(`Build failed:\n\n${stderr || err.message}`);
+      }
+
+      /* ---------- 3. FIND THE JAR ---------- */
+      const targetDir = path.join(workDir, 'target');
+      const jarName = fs
+        .readdirSync(targetDir)
+        .find((f) => f.endsWith('.jar'));
+
+      if (!jarName) {
+        return res
+          .status(500)
+          .send('Build succeeded but no JAR found in /target.');
+      }
+
+      res.download(path.join(targetDir, jarName), jarName);
+    }
+  );
 });
 
-app.listen(port, () => {
-  console.log(`🔧 Plugin build service running on port ${port}`);
-});
+app.listen(PORT, () =>
+  console.log(`🟢  Plugin compiler listening on ${PORT}`)
+);
