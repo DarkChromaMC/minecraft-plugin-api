@@ -7,12 +7,9 @@ const { exec } = require('child_process');
 const path = require('path');
 
 const app = express();
-app.use(cors({
-  origin: '*'    // or replace '*' with your editor’s exact origin for tighter security
-}));
+app.use(cors({ origin: '*' })); // You can replace '*' with a specific origin if needed
 
 const port = process.env.PORT || 3000;
-
 const upload = multer({ dest: '/tmp/uploads' });
 
 app.post('/compile', upload.single('plugin'), (req, res) => {
@@ -20,27 +17,57 @@ app.post('/compile', upload.single('plugin'), (req, res) => {
   const id = Date.now();
   const extractPath = `/tmp/plugin-${id}`;
 
-  fs.mkdirSync(extractPath);
+  try {
+    fs.mkdirSync(extractPath);
 
-  const zip = new AdmZip(zipPath);
-  zip.extractAllTo(extractPath, true);
+    const zip = new AdmZip(zipPath);
+    zip.extractAllTo(extractPath, true);
 
-  exec(`mvn clean package`, { cwd: extractPath }, (error, stdout, stderr) => {
-    if (error) {
-      console.error(stderr);
-      return res.status(500).send(`Build failed:\n\n${stderr}`);
+    // Confirm required files exist
+    if (!fs.existsSync(path.join(extractPath, 'pom.xml'))) {
+      return res.status(400).json({ success: false, message: 'Missing pom.xml in root directory.' });
+    }
+    if (!fs.existsSync(path.join(extractPath, 'plugin.yml'))) {
+      return res.status(400).json({ success: false, message: 'Missing plugin.yml in root directory.' });
     }
 
-    const targetPath = path.join(extractPath, 'target');
-    const files = fs.readdirSync(targetPath);
-    const jar = files.find(f => f.endsWith('.jar'));
+    // Compile with Maven
+    exec(`mvn clean package`, { cwd: extractPath }, (error, stdout, stderr) => {
+      if (error) {
+        console.error('Build error:', stderr);
+        return res.status(500).json({
+          success: false,
+          message: 'Compilation failed',
+          log: stdout + '\n' + stderr
+        });
+      }
 
-    if (!jar) {
-      return res.status(404).send('No .jar file found after compilation');
-    }
+      // Locate .jar file in /target/
+      const targetPath = path.join(extractPath, 'target');
+      const files = fs.readdirSync(targetPath);
+      const jar = files.find(f => f.endsWith('.jar'));
 
-    res.download(path.join(targetPath, jar));
-  });
+      if (!jar) {
+        return res.status(500).json({
+          success: false,
+          message: 'No .jar file found after successful Maven build',
+          log: stdout
+        });
+      }
+
+      // Send the .jar back
+      res.download(path.join(targetPath, jar));
+    });
+  } catch (e) {
+    console.error('Unexpected server error:', e);
+    return res.status(500).json({
+      success: false,
+      message: 'Internal server error during preparation',
+      error: e.message
+    });
+  }
 });
 
-app.listen(port, () => console.log(`Backend service running on port ${port}`));
+app.listen(port, () => {
+  console.log(`🔧 Plugin build service running on port ${port}`);
+});
