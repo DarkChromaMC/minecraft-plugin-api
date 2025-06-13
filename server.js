@@ -1,3 +1,4 @@
+const cors = require('cors');
 const express = require('express');
 const multer = require('multer');
 const AdmZip = require('adm-zip');
@@ -6,6 +7,10 @@ const { exec } = require('child_process');
 const path = require('path');
 
 const app = express();
+app.use(cors({
+  origin: '*'    // or replace '*' with your editor’s exact origin for tighter security
+}));
+
 const port = process.env.PORT || 3000;
 
 const upload = multer({ dest: '/tmp/uploads' });
