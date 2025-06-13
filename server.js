@@ -11,8 +11,11 @@ const app    = express();
 const upload = multer({ dest: '/tmp/uploads' });
 const PORT   = process.env.PORT || 3000;
 
-// ← allow all origins so your frontend can read the response body
+// Enable CORS everywhere, including preflight
 app.use(cors());
+app.options('*', cors());
+
+app.get('/health', (_req, res) => res.send('OK'));
 
 app.post('/compile', upload.single('plugin'), (req, res) => {
   if (!req.file) {
@@ -30,21 +33,23 @@ app.post('/compile', upload.single('plugin'), (req, res) => {
     console.error('ZIP extraction failed:', zipErr);
     return res
       .status(400)
-      .send(`Invalid ZIP archive. Must include pom.xml and src/ directory.\n\n${zipErr.message}`);
+      .send(
+        `Invalid ZIP archive. Must include pom.xml and src/ directory.\n\n` +
+        zipErr.message
+      );
   }
 
-  // 2) Compile with full output
+  // 2) Compile with verbose output
   exec(
     'mvn -B clean package',
     { cwd: workDir, maxBuffer: 1024 * 1024 },
     (err, stdout, stderr) => {
       if (err) {
-        // send back everything we got
-        const out = []
-          .concat(stdout?.trim()    ? [`STDOUT:\n${stdout}`]    : [])
-          .concat(stderr?.trim()    ? [`\nSTDERR:\n${stderr}`]   : [])
-          .join('\n') 
-          || err.message;
+        // build the combined output safely
+        const parts = [];
+        if (stdout && stdout.trim()) parts.push(`STDOUT:\n${stdout}`);
+        if (stderr && stderr.trim()) parts.push(`\nSTDERR:\n${stderr}`);
+        const out = parts.length > 0 ? parts.join('\n') : err.message;
 
         console.error('Maven build failed:', out);
         return res
@@ -60,7 +65,10 @@ app.post('/compile', upload.single('plugin'), (req, res) => {
       } catch (fsErr) {
         return res
           .status(500)
-          .send(`Build succeeded but could not list /target:\n\n${fsErr.message}`);
+          .send(
+            `Build succeeded but could not list /target:\n\n` +
+            fsErr.message
+          );
       }
 
       if (!jar) {
